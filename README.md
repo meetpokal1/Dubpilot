@@ -1,5 +1,7 @@
-# Dubpilot
-Takes a YouTube video in any language and produces an English-dubbed version: same video, same speaker energy, new audio track.
+# Automated Video Dubbing System
+
+Takes a YouTube video in any language and produces an English-dubbed
+version: same video, same speaker energy, new audio track.
 
 ## Pipeline
 
