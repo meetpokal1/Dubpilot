@@ -1,0 +1,22 @@
+name: Resume Pipeline Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install lightweight test dependencies
+        run: python -m pip install pytest pydub
+      - name: Compile pipeline modules
+        run: python -m compileall -q main.py checkpoint.py downloader.py transcriber.py translator.py synthesizer.py remixer.py diarization.py utils.py
+      - name: Run checkpoint and remix tests
+        run: python -m pytest tests/test_checkpoint_and_remix.py -q
