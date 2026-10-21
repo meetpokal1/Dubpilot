@@ -5,6 +5,8 @@ of drifting more and more out of sync as it goes.
 """
 
 import asyncio
+import hashlib
+import json
 import os
 import subprocess
 
@@ -31,7 +33,7 @@ def _speed_adjust(in_path, out_path, factor):
     subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
-def synthesize_segments(segments, work_dir, voice=DEFAULT_VOICE):
+def synthesize_segments(segments, work_dir, voice=DEFAULT_VOICE, resume=False):
     """Generate one audio clip per segment, time-stretched to fit the
     original segment's duration. Adds an 'audio_path' key to each segment.
     Segments can carry their own 'voice' key (set by diarization) which
@@ -39,6 +41,23 @@ def synthesize_segments(segments, work_dir, voice=DEFAULT_VOICE):
     """
     clips_dir = os.path.join(work_dir, "clips")
     os.makedirs(clips_dir, exist_ok=True)
+
+    def cache_key(text, segment_voice, segment):
+        stable = json.dumps(
+            {
+                "version": 1,
+                "text": text,
+                "voice": segment_voice,
+                "start": round(float(segment.get("start", 0)), 4),
+                "end": round(float(segment.get("end", 0)), 4),
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        return hashlib.sha256(stable.encode("utf-8")).hexdigest()
+
+    def valid_cached_file(path):
+        return isinstance(path, str) and os.path.isfile(path) and os.path.getsize(path) > 0
 
     for i, seg in enumerate(segments):
         text = seg["english"].strip()
@@ -48,7 +67,23 @@ def synthesize_segments(segments, work_dir, voice=DEFAULT_VOICE):
 
         raw_path = os.path.join(clips_dir, f"seg_{i:04d}_raw.mp3")
         final_path = os.path.join(clips_dir, f"seg_{i:04d}.mp3")
+        manifest_path = os.path.join(clips_dir, f"seg_{i:04d}.json")
         seg_voice = seg.get("voice", voice)
+        key = cache_key(text, seg_voice, seg)
+
+        # Only reuse a clip when its content, voice and original timing match.
+        # This prevents a prior run's stale audio from leaking into a new dub.
+        if resume and os.path.isfile(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as manifest_file:
+                    cached = json.load(manifest_file)
+                cached_path = cached.get("audio_path")
+                if cached.get("cache_key") == key and valid_cached_file(cached_path):
+                    seg["audio_path"] = cached_path
+                    log("synthesize", f"segment {i + 1}/{len(segments)} reused cached clip")
+                    continue
+            except (OSError, json.JSONDecodeError):
+                pass
 
         asyncio.run(_synthesize_text(text, seg_voice, raw_path))
 
@@ -64,7 +99,15 @@ def synthesize_segments(segments, work_dir, voice=DEFAULT_VOICE):
         else:
             final_path = raw_path
 
-        seg["audio_path"] = final_path
+        seg["audio_path"] = os.path.abspath(final_path)
+        manifest = {"cache_key": key, "audio_path": seg["audio_path"]}
+        temporary_manifest = manifest_path + ".tmp"
+        with open(temporary_manifest, "w", encoding="utf-8", newline="\\n") as manifest_file:
+            json.dump(manifest, manifest_file, ensure_ascii=False, indent=2)
+            manifest_file.write("\\n")
+            manifest_file.flush()
+            os.fsync(manifest_file.fileno())
+        os.replace(temporary_manifest, manifest_path)
         log("synthesize", f"segment {i + 1}/{len(segments)} done")
 
     return segments
