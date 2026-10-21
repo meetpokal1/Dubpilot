@@ -1,153 +1,99 @@
-# Automated Video Dubbing System
+# Dubpilot — Automated Video Dubbing System
 
-Takes a YouTube video in any language and produces an English-dubbed
-version: same video, same speaker energy, new audio track.
+Dubpilot takes a video in another language and produces an English-dubbed copy while preserving the original video stream. It demonstrates a staged media pipeline: download, speech recognition, translation, text-to-speech, timestamped audio assembly, and final muxing.
+
+## The operational problem addressed
+
+Speech recognition, translation and voice synthesis can take a long time—especially for lengthy videos or CPU-only systems. If a run is interrupted, a naive workflow may repeat expensive stages and TTS calls. Separately, translated phrases may be longer than the source speech and can overlap the next segment on the audio timeline.
 
 ## Pipeline
 
-```
-YouTube URL
-    |
-    v
-[1] download.py     -> yt-dlp fetches the video, ffmpeg pulls a 16kHz wav
-    |
-    v
-[2] transcriber.py  -> Whisper transcribes speech IN THE ORIGINAL LANGUAGE,
-    |                   with a start/end timestamp per segment
-    v
-[3] translator.py   -> each segment's text is translated to English
-    |                   (IndicTrans2 for Indian languages, Google Translate
-    |                   fallback for everything else)
-    v
-[4] synthesizer.py  -> edge-tts speaks each English segment, then each
-    |                   clip is time-stretched to fit its original
-    |                   segment's duration
-    v
-[5] remixer.py      -> clips are placed at their original timestamps to
-    |                   build one audio track, which replaces the video's
-    |                   original audio (video stream untouched)
-    v
-dubbed_output.mp4
-```
+1. **Download / audio extraction:** yt-dlp downloads the video; FFmpeg extracts a 16 kHz mono WAV for Whisper.
+2. **Transcription:** Whisper returns the source language and timestamped text segments.
+3. **Translation:** Indian-language sources can use optional IndicTrans2; otherwise Google Translate is used as a fallback.
+4. **Optional speaker diarization:** with the relevant dependencies and Hugging Face token, segments can be assigned different voices.
+5. **Speech synthesis:** edge-tts creates a clip for each English segment and FFmpeg can time-adjust it to the source segment duration.
+6. **Remix / mux:** clips are placed on a timeline and the dubbed audio replaces the source audio while the video stream is copied.
+
+## Improvements in this version
+
+- **Stage-level checkpointing:** after a stage finishes, the job stores a JSON checkpoint in the work directory, including the completed stages and artifact paths.
+- **Resume a long run:** `--resume` reloads completed download, transcription, translation, diarization, synthesis and remix stages when their saved artifacts are still valid.
+- **Per-segment synthesis cache:** a completed clip is reused only when the English text, selected voice and original segment timing match a stored cache key. This is especially useful if a long TTS stage is interrupted midway.
+- **Settings safety:** the checkpoint includes the source URL, voice, Whisper model, diarization option, output path and work directory. A resume request with different settings is rejected instead of silently reusing incompatible artifacts.
+- **Overlap mitigation:** the remixer clips the tail of a dubbed segment at the next dubbed segment's start (or at the end of the video), preventing two generated voice clips from being layered over each other on the timeline.
+- **Regression tests and CI:** checkpoint round-trips, config mismatch handling, downstream-stage invalidation and clip timing are tested.
 
 ## Setup
 
-1. Install ffmpeg (system dependency, not pip):
-   - macOS: `brew install ffmpeg`
-   - Ubuntu/Debian: `sudo apt install ffmpeg`
-   - Windows: download from ffmpeg.org and add it to PATH
+### System dependency
 
-2. Install Python dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+Install FFmpeg and make sure `ffmpeg` is available on your PATH.
 
-3. (Optional, for the IndicTrans2 path on Indian-language videos) —
-   accept the model terms at
-   huggingface.co/ai4bharat/indictrans2-indic-en-1B, then run
-   `huggingface-cli login` once, and install:
-   ```
-   pip install torch transformers sentencepiece
-   pip install git+https://github.com/VarunGumma/IndicTransToolkit.git
-   ```
-   Without this, Hindi/Marathi/Tamil/etc. sources still work fine — the
-   pipeline just falls back to Google Translate automatically.
+- macOS: `brew install ffmpeg`
+- Ubuntu/Debian: `sudo apt install ffmpeg`
+- Windows: install FFmpeg and add its `bin` directory to PATH
 
-4. (Optional, for `--diarize`, the multi-speaker stretch goal) — accept
-   the model terms at huggingface.co/pyannote/speaker-diarization-3.1,
-   get an HF access token, and:
-   ```
-   pip install pyannote.audio
-   export HF_TOKEN=your_token_here
-   ```
+### Python dependencies
+
+    python -m pip install -r requirements.txt
+
+For the optional IndicTrans2 path, accept the model terms at Hugging Face and follow AI4Bharat's current installation instructions. Without those optional dependencies, the general translation fallback remains available.
+
+For optional multi-speaker dubbing, install `pyannote.audio`, accept the model terms, and set `HF_TOKEN` in your environment.
 
 ## Usage
 
-```
-python main.py "https://youtube.com/watch?v=XXXXXXXX" --out dubbed.mp4
-```
+Start a new job:
 
-Options:
-- `--whisper-model` — tiny/base/small/medium/large (default small). Bigger
-  = more accurate but slower. See the timing note below.
-- `--voice` — any edge-tts voice name (default en-US-GuyNeural). Run
-  `edge-tts --list-voices` to see all of them.
-- `--diarize` — stretch goal, detects speakers and dubs each in a
-  different voice instead of one voice for the whole video.
+    python main.py "https://youtube.com/watch?v=XXXXXXXX" --out dubbed.mp4
 
-The terminal prints a timestamped line for every stage as it runs
-(`[HH:MM:SS] [stage] message`), and each stage reports how long it took
-when it finishes — that's what you'd screenshot or read out for the
-processing-time part of the submission.
+Resume or continue an interrupted job using its original work directory and the same settings:
 
-## Design decisions (for the walkthrough video)
+    python main.py "https://youtube.com/watch?v=XXXXXXXX" --out dubbed.mp4 --work-dir work --resume
 
-**Why timestamped segments instead of one big transcript.** Whisper
-already breaks speech into segments with start/end times. Keeping that
-structure all the way through — translate each segment, synthesize each
-segment, place each segment at its own timestamp — is what keeps the dub
-roughly lined up with the video instead of the audio and video slowly
-drifting apart over a long video. Translating and synthesizing the whole
-transcript as one block would be simpler code but there'd be no way to
-know where any given sentence should land on the timeline.
+Useful options:
 
-**Why speed-adjust each clip.** A translated sentence is rarely the same
-length as the original — English is often longer than Hindi for the same
-meaning, for instance. `ffmpeg`'s `atempo` filter stretches or compresses
-each clip to fit its original segment's duration without changing pitch
-(so a sped-up clip doesn't sound like a chipmunk). This is the main lever
-for keeping "timed to the original," which is one of the two things
-they're grading.
+- `--whisper-model` — `tiny`, `base`, `small`, `medium`, or `large` (default: `small`).
+- `--voice` — any edge-tts voice name (default: `en-US-GuyNeural`).
+- `--diarize` — optional speaker-aware voices.
+- `--work-dir` — location for source media, checkpoints and intermediate artifacts.
+- `--resume` — reuse completed stages and valid cached clips for the same job.
 
-**Why separate transcribe and translate instead of Whisper's built-in
-translate mode.** Whisper can translate directly to English in one pass,
-which would be less code. Splitting it into two stages instead — Whisper
-transcribes in the source language, then a separate translator converts
-that to English — is what lets IndicTrans2 (trained specifically on
-Indian languages) handle the translation for Hindi/Marathi/Tamil/etc,
-which is meaningfully better than Whisper's own translation for those
-languages. Google Translate (via deep-translator, free, no API key)
-covers everything else as a fallback.
+**Important:** use the same URL, model, voice, output and work directory with `--resume`. To deliberately start fresh, omit `--resume` or choose a new work directory. Keep the work directory until the final output has been checked.
 
-**Why -c:v copy on the final mux.** Re-encoding the video stream would
-cost a lot of processing time for no quality benefit, since only the
-audio track is changing. `-c:v copy` just repackages the existing video
-stream into the new container instead of re-encoding it, which is why the
-remix stage is fast even on a 2-hour video.
+The checkpoint file is `work/pipeline_state.json`. Transcription, translation and synthesis artifacts are stored separately in that folder so they can be inspected and reused.
 
-**Known limitation.** The speed-adjust approach keeps segments aligned to
-their *start* time, but very dense speech translated into longer English
-phrasing can still push a segment's audio slightly past its original end
-before overlapping the next one — pydub's `overlay` just layers it on top
-rather than clipping it. For a video with tightly-packed dialogue this can
-cause minor overlap. A stricter fix would be to detect and shorten/trim
-overlapping tails, which is a natural next improvement to mention if
-asked about limitations.
+## Clip alignment: what the overlap fix does—and does not do
 
-## A note on the two test videos
+The remixer prevents generated segments from playing over the next generated segment. If English audio is longer than the available gap, the tail is trimmed. This avoids overlapping generated dialogue, but a trimmed phrase can lose a final word. Listen to the output, especially dense conversations, before relying on it. A more advanced future version could use better speech-rate control, pause-aware segmentation and audio quality checks instead of relying on trimming alone.
 
-For the 30-minute video, the default `small` Whisper model on CPU should
-finish in a reasonable time. For the 2-hour video, transcription is the
-slowest stage — on CPU, expect it to take a multiple of the video's real
-length depending on your machine. Two practical options if it's too slow:
-- Run with `--whisper-model base` (faster, slightly less accurate) for
-  the long video specifically.
-- Run on a machine/Colab with a GPU, which speeds up both Whisper and
-  IndicTrans2 substantially.
+## Design decisions
 
-Either way, note which model size and hardware you used for each of the
-two submissions — that trade-off (accuracy vs. processing time) is a
-natural thing to discuss in the walkthrough video.
+- **Keep transcript segments timestamped.** Transcribing and translating one huge text block would lose the time ranges needed to align the dub with the original video.
+- **Separate transcription from translation.** This allows optional IndicTrans2 handling for Indian languages rather than relying exclusively on an all-purpose translator.
+- **Cache individual TTS clips by input key.** A resume should not reuse a clip if its wording, voice or timing has changed.
+- **Copy the video stream during muxing.** Only the audio changes, so FFmpeg can use `-c:v copy` rather than re-encoding the visual stream.
+
+## Tests
+
+    python -m pip install pytest pydub
+    python -m pytest tests/test_checkpoint_and_remix.py -q
+
+GitHub Actions runs the resume-state and clip-timing tests, plus a Python syntax compilation check.
 
 ## Project layout
 
-```
-main.py          CLI entry point, orchestrates the pipeline
-downloader.py     yt-dlp download + ffmpeg audio extraction
-transcriber.py    Whisper speech-to-text with timestamps
-translator.py     IndicTrans2 / Google Translate to English
-synthesizer.py    edge-tts speech synthesis + timing adjustment
-remixer.py        builds the final audio track and muxes it into the video
-diarization.py    optional stretch goal: per-speaker voices
-utils.py          logging and timing helpers
-```
+- `main.py` — CLI orchestration and resume decisions
+- `checkpoint.py` — durable checkpoint state and downstream invalidation
+- `downloader.py` — video download and audio extraction
+- `transcriber.py` — timestamped speech-to-text
+- `translator.py` — IndicTrans2 / Google translation fallback
+- `synthesizer.py` — voice generation, time adjustment and input-keyed clip caching
+- `remixer.py` — clip placement, overlap mitigation and audio/video mux
+- `diarization.py` — optional speaker-to-voice mapping
+- `utils.py` — timestamped stage logs and timers
+
+## Responsible use
+
+Only process content you are authorised to use. Respect platform terms, copyright, privacy, and applicable rules about synthetic or translated speech.
