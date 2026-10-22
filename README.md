@@ -2,11 +2,11 @@
 
 Dubpilot takes a video in another language and produces an English-dubbed copy while preserving the original video stream. It demonstrates a staged media pipeline: download, speech recognition, translation, text-to-speech, timestamped audio assembly, and final muxing.
 
-## Interface Preview (Illustrative)
+## CLI Preview (Illustrative)
 
-![Dubpilot processing console interface preview](screenshots/dubpilot-processing-console.svg)
+![Dubpilot CLI session preview showing documented pipeline stages and resume safeguards](screenshots/dubpilot-cli-preview.svg)
 
-> Illustrative console preview based on the documented stages and resume safeguards. The displayed lines are examples, not logs captured from an actual execution.
+> Illustrative CLI preview based on the documented pipeline behaviour. The displayed output is an example, not logs captured from an actual execution.
 
 
 ## The operational problem addressed
