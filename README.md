@@ -2,6 +2,13 @@
 
 Dubpilot takes a video in another language and produces an English-dubbed copy while preserving the original video stream. It demonstrates a staged media pipeline: download, speech recognition, translation, text-to-speech, timestamped audio assembly, and final muxing.
 
+## Interface Preview (Illustrative)
+
+![Dubpilot processing console interface preview](screenshots/dubpilot-processing-console.svg)
+
+> Illustrative console preview based on the documented stages and resume safeguards. The displayed lines are examples, not logs captured from an actual execution.
+
+
 ## The operational problem addressed
 
 Speech recognition, translation and voice synthesis can take a long time—especially for lengthy videos or CPU-only systems. If a run is interrupted, a naive workflow may repeat expensive stages and TTS calls. Separately, translated phrases may be longer than the source speech and can overlap the next segment on the audio timeline.
